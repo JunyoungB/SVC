@@ -2,11 +2,16 @@ import numpy as np
 import time
 import scipy.io as sio
 import sklearn.metrics.pairwise as kernels
+import numpy.linalg as la
 from scipy.linalg import inv
 from scipy.sparse import csgraph as cg
 from IPython import embed
 from cvxopt import matrix
 from cvxopt import solvers
+from sklearn.metrics.pairwise import euclidean_distances
+from numpy import matlib as ml
+from scipy.optimize import *
+
 
 
 def kradius(X, model):
@@ -100,6 +105,36 @@ def diagker(X, ker, arg):
     return diagK
 
 
+def var_gpr(test, input, inv_C, hyperpara):
+    # % Variance in Gaussian Process Regression used as Support Funtion of Clustering
+    # %
+    # % The variance function of a predictive distribution of GPR
+    # % sigma^2(x) = kappa - k'C^(-1)k
+    # %==========================================================================
+    # % Implemented by H.C. Kim Jan. 16, 2006
+    # % Modified by Sujee Lee at September 10, 2014.
+    # %
+    # % * The source code is available under the GNU LESSER GENERAL PUBLIC
+    # % LICENSE, version 2.1.
+    # %==========================================================================
+    [D, n] = input.shape
+    [D, nn] = test.shape
+    expX = hyperpara
+    a = np.zeros([nn, n])
+
+    for d in range(D):
+        a = a + expX[0][d] * (np.tile(input[d, :], [nn, 1]) - np.tile(np.reshape(test[d, :], [-1, 1]), [1, n])) ** 2
+
+    a = expX[1] * np.exp(-0.5 * a)
+    b = expX[1]
+    mul = a.dot(inv_C.T)
+    dmul = np.multiply(a, mul)
+    s_a_inv_C_a = np.sum(dmul, axis=1)
+    var = b - s_a_inv_C_a
+
+    return var
+
+
 # coding: utf-8
 
 # In[ ]:
@@ -112,16 +147,7 @@ Created on Wed Aug 30 19:49:55 2017
 @author: User
 """
 
-import numpy as np
-import time
-import scipy.io as sio
-import sklearn.metrics.pairwise as kernels
-from scipy.linalg import inv
-from scipy.sparse import csgraph as cg
-from scipy.optimize import minimize
-from IPython import embed
-from cvxopt import matrix
-from cvxopt import solvers
+
 
 ###Tutorial
 """
@@ -477,10 +503,10 @@ class labeling:
             for i in range(N):
                 x0 = X.T[i]
                 if len(x0) <= 2:
-                    res = minimize(fun=my_R, x0=x0, args=model.model, method='Nelder-Mead')
+                    res = minimize(fun=my_R1, x0=x0, args=model.model, method='Nelder-Mead')
                     [temp, val] = [res.x, res.fun]
                 else:
-                    res = minimize(fun=my_R, x0=x0, method='trust-ncg')
+                    res = minimize(fun=my_R1, x0=x0, method='trust-ncg')
                     [temp, val] = [res.x, res.fun]
                 N_locals.append(temp)
                 local_val.append(val)
@@ -505,39 +531,220 @@ class labeling:
         local_cluster_assignments = np.array(local_cluster_assignments)
         print(local_cluster_assignments[match_local])
 
-    def findTPs(self, local, epsilon):
+    def findTPs(self):
+        locals = self.locals
         model = self.supportmodel
-        
-        
+        epsilon = self.options['epsilon']
+        R = model.R + 10 ** (-7)
+        print(self.locals)
+        ts = {}
+        ts['x'] = []
+        ts['f'] = []
+        ts['neighbor'] = []
+        ts['purturb'] = []
+        [N, attr] = locals.shape
+        tmp_x = []
 
-def var_gpr(test, input, inv_C, hyperpara):
-#% Variance in Gaussian Process Regression used as Support Funtion of Clustering
-#%
-#% The variance function of a predictive distribution of GPR
-#% sigma^2(x) = kappa - k'C^(-1)k
-#%==========================================================================
-#% Implemented by H.C. Kim Jan. 16, 2006
-#% Modified by Sujee Lee at September 10, 2014.
-#%
-#% * The source code is available under the GNU LESSER GENERAL PUBLIC
-#% LICENSE, version 2.1. 
-#%==========================================================================
-    [D,n]=input.shape
-    [D,nn]=test.shape
-    expX=hyperpara
-    a=np.zeros([nn,n])
+        if model.support == 'GP':
+            for i in range(N):
+                for j in range(i, N):
+                    for k in range(10):
+                        x0 = locals[i] + 0.1 * (k + 1) * (locals[j] - locals[i])
+                        sep = fsolve(func=fsolve_R_GP, x0=x0, args=model, xtol=10 ** (-6))
+                        tmp_x.append(sep)
+            tmp_x = np.array(tmp_x)
+            [dummy, I, J] = np.unique(np.round(10 * tmp_x), axis=0, return_index=True, return_inverse=True)
+            tmp_x = tmp_x[I, :]
+            for i in range(list(tmp_x.shape)[0]):
+                sep = tmp_x[i]
+                [f, g, H] = my_R_GP2(sep, model)
+                [D, V] = la.eig(H)
 
-    for d in range(D):
-            a=a+expX[0][d]*(np.tile(input[d,:],[nn,1])-np.tile(np.reshape(test[d,:],[-1,1]),[1,n]))**2
-    
-    a = expX[1]*np.exp(-0.5*a)
-    b = expX[1]
-    mul=a.dot(inv_C.T)
-    dmul=np.multiply(a,mul) 
-    s_a_inv_C_a = np.sum(dmul,axis=1)
-    var = b -s_a_inv_C_a 
-         
-    return var
+                ind = []
+                if np.sum(D < 0) == 1:
+                    sep1 = sep + epsilon * V[np.where(D < 0)]
+                    sep2 = sep - epsilon * V[np.where(D < 0)]
+
+                    if attr == 2:
+                        res1 = minimize(fun=my_R_GP1, x0=sep1, args=model, method='Nelder-Mead')
+                        [temp1, val] = [res1.x, res1.fun]
+                        res2 = minimize(fun=my_R_GP1, x0=sep2, args=model, method='Nelder-Mead')
+                        [temp2, val] = [res2.x, res2.fun]
+                    else:
+                        res1 = minimize(fun=my_R_GP1, x0=sep1, args=model, hess=True)
+                        [temp1, val] = [res1.x, res1.fun]
+                        res2 = minimize(fun=my_R_GP1, x0=sep2, args=model, hess=True)
+                        [temp2, val] = [res2.x, res2.fun]
+                    [dummy, ind1] = [np.min(euclidean_distances(temp1.reshape(1, -1), locals)),
+                                     np.argmin(euclidean_distances(temp1.reshape(1, -1), locals))]
+                    [dummy, ind2] = [np.min(euclidean_distances(temp2.reshape(1, -1), locals)),
+                                     np.argmin(euclidean_distances(temp2.reshape(1, -1), locals))]
+                    if ind1 != ind2:
+                        ts['x'].append(sep)
+                        ts['f'].append(f)
+                        ts['neighbor'].append([ind1, ind2])
+                        ts['purturb'].append([sep1, sep2])
+        if model.support == 'SVDD':
+            for i in range(N):
+                for j in range(i, N):
+                    for k in range(10):
+                        x0 = locals[i] + 0.1 * (k + 1) * (locals[j] - locals[i])
+                        sep = fsolve(func=fsolve_R, x0=x0, args=model, maxfev=300, xtol=10 ** (-6))
+                        tmp_x.append(sep)
+            tmp_x = np.array(tmp_x)
+            [dummy, I, J] = np.unique(np.round(10 * tmp_x), axis=0, return_index=True, return_inverse=True)
+            tmp_x = tmp_x[I, :]
+
+            for i in range(list(tmp_x.shape)[0]):
+                sep = tmp_x[i]
+                [f, g, H] = my_R2(sep, model)
+                [D, V] = la.eig(H)
+                ind = []
+                if np.sum(D < 0) == 1:
+
+                    sep1 = sep + epsilon * V[np.where(D < 0)]
+                    sep2 = sep - epsilon * V[np.where(D < 0)]
+                    if attr == 2:
+                        res1 = minimize(fun=my_R1, x0=sep1, args=model, method='Nelder-Mead')
+                        [temp1, val] = [res1.x, res1.fun]
+                        res2 = minimize(fun=my_R1, x0=sep2, args=model, method='Nelder-Mead')
+                        [temp2, val] = [res2.x, res2.fun]
+                    else:
+                        res1 = minimize(fun=my_R1, x0=sep1, args=model, hess=True)
+                        [temp1, val] = [res1.x, res1.fun]
+                        res2 = minimize(fun=my_R1, x0=sep2, args=model, hess=True)
+                        [temp2, val] = [res2.x, res2.fun]
+                    [dummy, ind1] = [np.min(euclidean_distances(temp1.reshape(1, -1), locals)),
+                                     np.argmin(euclidean_distances(temp1.reshape(1, -1), locals))]
+                    [dummy, ind2] = [np.min(euclidean_distances(temp2.reshape(1, -1), locals)),
+                                     np.argmin(euclidean_distances(temp2.reshape(1, -1), locals))]
+                    if ind1 != ind2:
+                        ts['x'].append(sep)
+                        ts['f'].append(f)
+                        ts['neighbor'].append([ind1, ind2])
+                        ts['purturb'].append([sep1, sep2])
+        ts['x'] = np.array(ts['x'])
+        ts['f'] = np.array(ts['f'])
+        ts['neighbor'] = np.array(ts['neighbor'])
+        ts['purturb'] = np.array(ts['purturb'])
+        self.ts = ts
+
+    def hierarchicalLabelTSVC(self):
+        print("hierarchicalLableTSVC")
+        nOfLocals = self.locals.shape[0]
+        ts = self.ts
+        nOfTS = len(ts['f'])
+        K = self.options['K']
+
+        local_clusters_assignments = []
+        f_sort = np.sort(ts['f'], 0)  # small --> large
+        print("f_sort:", f_sort)
+        adjacent = np.zeros([nOfLocals, nOfLocals, nOfTS])
+        a = []
+        flag = 0
+        for m in range(nOfTS):
+            cur_f = f_sort[
+                -m - 1]  # % cutting level:large --> small  (small number of clusters --> large number of clusters)
+            # %cur_f=f_sort(i);         % cutting level: small --> large (large number of clusters --> small number of clusters)
+
+            tmp = np.nonzero(ts['f'] < cur_f)[0]
+            if len(tmp) > 0:  # % TSs inside the sphere
+                for j in range(len(tmp)):
+                    adjacent[ts['neighbor'][tmp[j], 0], ts['neighbor'][tmp[j], 1], m] = 1
+                    adjacent[ts['neighbor'][tmp[j], 1], ts['neighbor'][tmp[j], 0], m] = 1
+                    # %% To connect nodes which can be connected via directly connected edges.
+                for i in range(nOfLocals):
+                    for j in range(i):
+                        if (adjacent[i, j, m] == 1):
+                            adjacent[i, :, m] = np.logical_or(adjacent[i, :, m], adjacent[j, :, m])
+                    adjacent[i, i] = 1
+
+            a = [a, cur_f]
+            my_ts = {}
+            my_ts['x'] = ts['x'][tmp, :]
+            my_ts['f'] = ts['f'][tmp, :]
+            my_ts['purturb'] = ts['purturb'][tmp, :]
+            my_ts['neighbor'] = ts['neighbor'][tmp, :]
+            my_ts['cuttingLevel'] = cur_f
+            ind = np.nonzero(ts['f'] == cur_f)[0]
+            my_ts['levelx'] = ts['x'][ind[0], :]
+            tmp_ts = {}  ####dictionary
+            tmp_ts[m] = my_ts
+
+            assignment = cg.connected_components(adjacent[:, :, m])[1]
+            print("assignment:", assignment)
+            print("N_clusters:", np.max(assignment) + 1)
+            if np.max(assignment) == K - 1:
+                print('We can find the number of K clusters');
+                # % clstmodel update
+                self.out_ts = tmp_ts[m]
+                # % cluster assignment into entire data points
+                self.local_ass = assignment
+                self.cluster_labels = self.local_ass[self.match_local].T
+                flag = 1
+                break
+
+            local_clusters_assignments = [local_clusters_assignments, assignment]
+
+            # % cannot find k clusters
+        if flag == 0:
+            print(
+                'Cannot find cluster assignments with K number of clusters, instead that we find cluster assignments the with the nearest number of clusters to K !');
+            [dummy, ind] = np.min(euclidean_distances(np.max(local_clusters_assignments, 0).T, K), 0)  ####min/max
+
+            # %ts=[];
+            self.out_ts = tmp_ts[ind[0]]
+            local_clusters_assignments = local_clusters_assignments[:, ind[0]]
+            self.local_ass = local_clusters_assignments
+            self.cluster_labels = self.local_ass[self.match_local]
+            print(self.cluster_labels)
+        
+    def tmsc(self):
+        fHierarchical = self.options['hierarchical']
+
+        # % Find SEPs
+        [rep_locals, locals, local_val, match_local] = self.findSEPs()
+        nOfLocals = locals.shape[0]
+        self.locals = locals  #####transpose
+        self.match_local = match_local
+        # % Find transition points and label the SEPs
+        self.findTPs()
+
+        # %% Cluster assignment of each data point
+
+        # --- Automatic determination of cluster number based on the cluster boundary
+        if not (fHierarchical):
+
+            print('Automatic determination of cluster numbers based on the SVDD boundearies defined by R^2');
+            adjacent = np.zeros([nOfLocals, nOfLocals])
+
+            tmp = np.nonzero(self.ts['f'] < self.supportmodel.R)[0]  ########
+            if np.nonzero(len(tmp)):  # % only check the connectivity of TSs inside the sphere
+                for j in range(len(tmp)):
+                    adjacent[self.ts['neighbor'][tmp[j], 0], self.ts['neighbor'][tmp[j], 1]] = 1
+                    adjacent[self.ts['neighbor'][tmp[j], 1], self.ts['neighbor'][tmp[j], 0]] = 1
+                    # %% To connect nodes which can be connected via directly connected edges.
+                for i in range(nOfLocals):
+                    for j in range(i):
+                        if (adjacent[i, j] == 1):
+                            adjacent[i, :] = np.logical_or(adjacent[i, :], adjacent[j, :])
+                    adjacent[i, i] = 1
+                self.local_clusters_assignments = np.array(cg.connected_components(adjacent)[1])
+                print(self.local_clusters_assignments)
+                # % model update
+            self.ts['x'] = self.ts['x'][tmp, :]
+            self.ts['f'] = self.ts['f'][tmp, :]
+            self.ts['purturb'] = self.ts['purturb'][tmp, :]
+            self.ts['neighbor'] = self.ts['neighbor'][tmp, :]
+            self.ts['cuttingLevel'] = self.supportmodel.R
+
+            # % cluster assignment into entire data points
+            self.cluster_labels = self.local_clusters_assignments[match_local].T  ###transpose
+            print(self.cluster_labels)
+        else:
+            self.hierarchicalLabelTSVC()
+
+
 
 
 def my_R_GP(x, supportmodel, nargout=1):
@@ -595,22 +802,130 @@ def my_R_GP(x, supportmodel, nargout=1):
             #%         H= hessian(@(xx)var_gpr(xx,model.X,model.inv_C,model.hyperparams),x); %%
     return f,g,H
 
-def my_R(x, model):
+def my_R1(x, model):
+    f = kradius(x.reshape(x.shape[0], 1), model)
+    return f
+
+def my_R2(x, model):
     d = x.shape[0]
-    n = model['nsv']
+    n = model.svdd_model['nsv']
     f = kradius(x.reshape(x.shape[0], 1), model)
 
-    #q = 1 / (2 * model['options']['arg'] * model['options']['arg'])
-    #K = kernel(model['sv']['X'], model['options']['ker'], model['options']['arg'], input2=x.reshape(-1,1))
-    #g = 4 * q * np.dot(model['Alpha'].reshape(model['Alpha'].shape[0], 1).T, np.multiply(np.matlib.repmat(K, 1, d), (np.matlib.repmat(x, n, 1) - model['sv']['X'].T)))
+    q = 1 / (2 * model.svdd_model['options']['arg'] * model.svdd_model['options']['arg'])
+    K = kernel(model.svdd_model['sv']['X'], model.svdd_model['options']['ker'], model.svdd_model['options']['arg'],
+               input2=x.reshape(x.shape[0], 1))
+    g = 4 * q * np.dot(model.svdd_model['Alpha'].reshape(model.svdd_model['Alpha'].shape[0], 1).T,
+                       np.multiply(ml.repmat(K, 1, d),
+                                   (ml.repmat(x, n, 1) - model.svdd_model['sv']['X'].T)))
 
-    #const = np.multiply(model['Alpha'], K)
-    #H = np.zeros([d,1]).T
+    const = np.multiply(model.svdd_model['Alpha'], K)
+    H = []
 
-    #for i in range(d):
-    #    H = H - 8 * q * q * np.sum(np.multiply(np.multiply(np.matlib.repmat(const.T, d, 1), (np.matlib.repmat(x[i], d, n) - np.matlib.repmat(model['sv']['X'][i,:].T, d, 1))), (np.matlib.repmat(x.reshape(x.shape[0],1), 1, n) - model['sv']['X'])), axis = 1)
-    #H = H + 4 * q * np.eye(d)*np.dot(model['Alpha'].reshape(model['Alpha'].shape[0], 1).T, K)
+    for i in range(d):
+        H.append(- 8 * q * q * np.sum(np.multiply(np.multiply(ml.repmat(const.T, d, 1), (
+        ml.repmat(x[i], d, n) - ml.repmat(model.svdd_model['sv']['X'][i, :].T, d, 1))), (
+                                                  ml.repmat(x.reshape(x.shape[0], 1), 1, n) -
+                                                  model.svdd_model['sv']['X'])), axis=1).T)
+    H = np.array(H).T
+    H = H + 4 * q * np.eye(d) * np.dot(model.svdd_model['Alpha'].reshape(model.svdd_model['Alpha'].shape[0], 1).T, K)
+    return f, g, H
+
+def my_R_GP1(x, model):
+    f = var_gpr(np.reshape(x, [-1, 1]), model.normalized_input, model.inv_C, model.gp_params)  ##full(X)
     return f
+
+def my_R_GP2(x, model):
+    # %
+    # %   Calculating function value and gradient of
+    # %   the trained kernel radius function
+    # %==========================================================================
+    # % Implemented by Kyu-Hwan Jung at April 26, 2010.
+    # % Modified by Sujee Lee at September 3, 2014.
+    # %
+    # % * The source code is available under the GNU LESSER GENERAL PUBLIC
+    # % LICENSE, version 2.1.
+    # %==========================================================================
+    x = x.reshape(-1, 1)
+
+    input = model.normalized_input
+    inv_K = model.inv_C
+    hparam = model.gp_params
+
+    f = var_gpr(x, input, inv_K, hparam)  ##############full
+
+    input = input.T
+    x = x.reshape(1, -1)
+    hparam = np.append(hparam[0], np.array(hparam[1:]).reshape(-1, 1), axis=0)
+    [N, D] = input.shape
+    [nn, D] = x.shape  # % nn=1
+    k = np.zeros((N, nn))
+
+    for d in range(D):
+        k += hparam[d][0] * np.power((ml.repmat(input[:, d].reshape(-1, 1), 1, nn) - ml.repmat(np.transpose(x[:, d]), N, 1)), 2)
+    k = hparam[D] * np.exp(-0.5 * k)
+    gk = -np.multiply(np.multiply(ml.repmat(k, 1, D), ml.repmat(np.transpose(hparam[0:D]), N, 1)), ml.repmat(x, N, 1) - input)
+    g = -2 * np.dot(np.dot(np.transpose(gk), inv_K), k)
+
+    Hk = np.zeros((N, D ** 2))  # % Hessian of k. (make N * D^2 matrix)
+    for j in range(D):
+        Hkj = np.multiply(gk , -hparam[j] * np.matlib.repmat((x[:, j] - input[:, j]), D, 1).T ) # % x(:,j)-input(:,j) : scalar - vector
+        Hkj[:, j] = Hkj[:, j] - hparam[j] * k.reshape(1, -1)
+        Hk[:, j * D:(j + 1) * D] = Hkj  #####################index
+    H1 = np.matmul(np.matmul(Hk.T, inv_K), k)  # % D^2 * 1
+    H1 = np.reshape(H1, [D, D])  # % D * D
+    H2 = np.matmul(np.matmul(gk.T, inv_K), gk)  # % D * D
+    H = -2 * (H1 + H2)
+    # %         H= hessian(@(xx)var_gpr(xx,model.X,model.inv_C,model.hyperparams),x); %%
+    return f, g, H
+
+def fsolve_R(x, model):
+    d = x.shape[0]
+    n = model.svdd_model['nsv']
+
+    q = 1 / (2 * model.svdd_model['options']['arg'] ** 2)
+    K = kernel(model.svdd_model['sv']['X'], ker=model.svdd_model['options']['ker'],
+               arg=model.svdd_model['options']['arg'], input2=x.reshape(x.shape[0], 1))
+
+    F = 4 * q * np.dot(np.transpose(model.svdd_model['Alpha']),
+                       np.multiply(ml.repmat(K, 1, d), ml.repmat(x, n, 1) - np.transpose(model.svdd_model['sv']['X'])))
+
+    # if nargout >1:
+    #    const = np.multiply(np.transpose(model['Alpha']),K)
+    #    J = []
+    #    for i in range(d):
+    #    for i in range(d):
+    #        J=[J-8*q**2*np.sum(np.multiply(np.transpose(ml.repmat(np.transpose(const),d,1))),ml.repmat(x[i],d,n)-np.multiply(np.transpose(ml.repmat(model['sv']['X'][i,:],d,1)),ml.repmat(np.transpose(x),1,n)-model['sv']['X']),1)]
+
+    #   J = J + 4*q*np.multiply(np.multiply(np.eye(d), np.transpose(model['Alpha'])), K)
+
+    return F[0]
+
+
+def fsolve_R_GP(x, model):
+    input = model.normalized_input.T
+    hparam = model.gp_params
+
+    [N, D] = input.shape
+    x = x.reshape(-1, D)
+    [nn, D] = x.shape
+
+    inv_K = model.inv_C
+
+
+    hparam = np.append(hparam[0], np.array(hparam[1:]).reshape(-1,1), axis=0)
+
+    k = np.zeros((N, nn))
+    for d in range(D):
+
+        k += hparam[d][0] * np.power((ml.repmat(input[:, d].reshape(-1, 1), 1, nn)-ml.repmat(np.transpose(x[:, d]), N, 1)), 2)
+    k = hparam[D] * np.exp(-0.5 * k)
+
+    gk = -np.multiply(np.multiply(ml.repmat(k, 1, D), ml.repmat(np.transpose(hparam[0:D]), N, 1)),
+                      ml.repmat(x, N, 1) - input)
+    g = -2 * np.dot(np.dot(np.transpose(gk),inv_K), k)
+
+    return g.ravel()
+
                                    
 
 
