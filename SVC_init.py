@@ -12,6 +12,40 @@ from sklearn.metrics.pairwise import euclidean_distances
 from numpy import matlib as ml
 from scipy.optimize import *
 
+##Structure
+"""
+kradius
+kernel
+qpssvm
+diagker
+var_gpar
+load_data
+class support model
+    __init__
+    gp_normalize
+    gp
+    get_inv_C
+    svdd_normalize
+    svdd
+class labeling
+    __init__
+    run
+    findAdjMatrix
+    cgsc
+    findSEPs
+    smsc(Byun)
+    findTPs
+    hierarchicalLabelTSVC
+    tmsc
+    fmsc
+    vmsc
+my_R1 // f for minimize
+my_R2 // f, g, H
+my_R_GP1 // f for minimize
+my_R_GP2 // f, g, H
+fsolve_R
+fsolve_R_GP
+"""
 
 
 def kradius(X, model):
@@ -134,68 +168,6 @@ def var_gpr(test, input, inv_C, hyperpara):
 
     return var
 
-
-# coding: utf-8
-
-# In[ ]:
-
-
-
-"""
-Created on Wed Aug 30 19:49:55 2017
-
-@author: User
-"""
-
-
-
-###Tutorial
-"""
-data_name='ring'
-input = load_data(data_name)
-support = "GP"
-hyperparams = [100*np.ones((input.shape[0],1)), 1, 10]
-st=time.time()
-model = supportmodel(input,support,hyperparams)
-et=time.time()
-print("Training time:", et-st)
-print("---------------------------------")
-labmodel = labeling(model,"CG-SC")
-labmodel.run()
-et1=time.time()
-print("Labeling time:", et1-et)
-print("---------------------------------")
-embed()
-"""
-
-##Structure
-"""
-load_data
-class support model
-    __init__
-    gp_normalize
-    gp
-    get_inv_C
-    svdd_normalize
-    svdd(Son)
-    kernel(Son)
-    qpssvm(Son)
-class labeling
-    __init__
-    run
-    findAdjMatrix
-    kradius
-    cgsc
-    smsc(Byun)
-    tmsc(?)
-    fmsc(?)
-    vmsc(?)
-    findSEPs(Byun)
-    findTPs(Byun)
-var_gpr
-my_R_GP
-"""
-
 def load_data(data_name):
     data=sio.loadmat('data/'+data_name)
     if data=='toy':
@@ -290,8 +262,7 @@ class supportmodel:
         C = params[1]*np.exp(-0.5*C) + params[2]*np.eye(n)
                     
         self.inv_C = inv(np.matrix(C))
-        
-    ####Bumho Son
+
     def svdd_normalize(self):
         Xin = self.input
         [dim, n] = Xin.shape
@@ -360,10 +331,6 @@ class supportmodel:
         print("Training Completed!")
         end_time = time.time()
         print("Trading time for SVDD is : ", end_time - start_time, " sec")
-
-    
-
-
 
 class labeling:
     def __init__(self, supportmodel, labelingmethod, options=None):
@@ -459,8 +426,6 @@ class labeling:
         self.adjacent_matrix = adjacent
         self.symmetric = (np.max(np.abs(adjacent-adjacent.T) == 0))
 
-
-    
     def cgsc(self):
 #% CGSVC Support Vector Clusteing using Complete-Graph Based Labeling Method
 #%
@@ -482,7 +447,6 @@ class labeling:
         self.cluster_label = cg.connected_components(self.adjacent_matrix)
         print(self.cluster_label[1])
 
-    ### Junyoung Byun
     def findSEPs(self):
         model = self.supportmodel
         X = model.normalized_input
@@ -494,7 +458,7 @@ class labeling:
         if model.model['support_type'] == 'GP':
             for i in range(N):
                 x0 = X[i]
-                res = minimize(fun=my_R_GP, x0=x0)
+                res = minimize(fun=my_R_GP1, x0=x0)
                 [temp, val] = [res.x, res.fun]
                 N_locals.append(temp)
                 local_val.append(val)
@@ -584,6 +548,7 @@ class labeling:
                         ts['f'].append(f)
                         ts['neighbor'].append([ind1, ind2])
                         ts['purturb'].append([sep1, sep2])
+
         if model.support == 'SVDD':
             for i in range(N):
                 for j in range(i, N):
@@ -623,6 +588,7 @@ class labeling:
                         ts['f'].append(f)
                         ts['neighbor'].append([ind1, ind2])
                         ts['purturb'].append([sep1, sep2])
+
         ts['x'] = np.array(ts['x'])
         ts['f'] = np.array(ts['f'])
         ts['neighbor'] = np.array(ts['neighbor'])
@@ -675,7 +641,7 @@ class labeling:
             print("assignment:", assignment)
             print("N_clusters:", np.max(assignment) + 1)
             if np.max(assignment) == K - 1:
-                print('We can find the number of K clusters');
+                print('We can find the number of K clusters')
                 # % clstmodel update
                 self.out_ts = tmp_ts[m]
                 # % cluster assignment into entire data points
@@ -743,64 +709,6 @@ class labeling:
             print(self.cluster_labels)
         else:
             self.hierarchicalLabelTSVC()
-
-
-
-
-def my_R_GP(x, supportmodel, nargout=1):
-##Usage of nargout
-##if you need f only->nargout=1
-##if you need f and gradient only->nargout=2
-##if you need all f, gradient and Hessian->nargout=3
-
-#%   Calculating function value and gradient of
-#%   the trained kernel radius function
-#%==========================================================================
-#% Implemented by Kyu-Hwan Jung at April 26, 2010.
-#% Modified by Sujee Lee at September 3, 2014.
-#%
-#% * The source code is available under the GNU LESSER GENERAL PUBLIC
-#% LICENSE, version 2.1. 
-#%==========================================================================
-    model=supportmodel
-    f= var_gpr(x, model.input, model.inv_C, model.gp_params) ##full(X)
-#    %[n d]=size(model.SVs);
-#    %q=model.Parameters(4);
-#    %SV=full(model.SVs);
-#    %beta=model.sv_coef;
-
-    if nargout>1:
-        #x=full(x)
-        xt=x.T
-        
-        input = model.input
-        hparam = model.gp_params
-        tinput=input.T
-        [D,N]=input.shape
-        [D,nn]=x.shape # % nn=1
-    
-        inv_K = model.inv_C
-        k = np.zeros([N, nn])  #% create and zero space
-        for d in range(D):
-            k = k + hparam[0][d]*(np.tile(np.reshape(tinput[:,d],[-1,1]),[1,nn])-np.tile(xt[:,d],[N,1]))**2 ## nn * N, last term, np.tie(x....), need to be changed
-        k = hparam[1]*np.exp(-0.5*k)
-                    
-        gk = - np.tile(k,[1,D])*np.tile(hparam[0,:],[N,1])*(np.tile(xt,[N,1])-tinput)  #% N * D ##hparam[0:D] ##elementwise
-        g = - 2 * np.matmul(np.matmul(gk.T , inv_K) , k) #D * nn
-        #%     g= gradient(@(xx)var_gpr(xx,model.X,model.inv_C,model.hyperparams),x); %%
-                                       
-        if nargout>2:
-            Hk = np.zeros(N, D**2) # % Hessian of k. (make N * D^2 matrix)
-            for j in range(D):
-                Hkj = gk*(-hparam[0][j]*np.tile(np.reshape(xt[j]-tinput[:,j],[-1,1]),1,D))  #% x(:,j)-input(:,j) : scalar - vector
-                Hkj[:,j] = Hkj[:,j] - hparam[0][j]*k
-                Hk[:,j*D:(j+1)*D-1] = Hkj
-            H1 = np.matmul(np.matmul(Hk.T, inv_K), k)  #% D^2 * 1
-            H1 = np.reshape(H1,[D,D])  #% D * D
-            H2 = np.matmul(np.matmul(gk.T, inv_K),gk) #% D * D
-            H = -2*(H1+H2)
-            #%         H= hessian(@(xx)var_gpr(xx,model.X,model.inv_C,model.hyperparams),x); %%
-    return f,g,H
 
 def my_R1(x, model):
     f = kradius(x.reshape(x.shape[0], 1), model)
